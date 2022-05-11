@@ -12,7 +12,25 @@
 
 #define BUF_SIZE 1000
 
-int new_socket(int socktype, int protocol, char *service, bool broadcast) {
+struct user {
+	char status[BUF_SIZE];
+	char name[BUF_SIZE];
+	char port[BUF_SIZE];
+	char host[NI_MAXHOST];
+};
+
+struct user create_user(char *name, char *host, char* port) {
+	struct user new_user;
+	
+	strcpy(new_user.status, "online");
+	strcpy(new_user.name, name);
+	strcpy(new_user.port, port);
+	strcpy(new_user.host, host);
+	
+	return new_user;
+}	
+
+int new_socket(int socktype, int protocol, char* service, bool udp) {
 
 	int socketfd;
 	
@@ -41,6 +59,7 @@ int new_socket(int socktype, int protocol, char *service, bool broadcast) {
         if (socketfd == -1)
             continue; 
 
+		//set SO_REUSEADDR for both UDP and TCP
 		int enable_reuseaddr = 1;
         setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &enable_reuseaddr, sizeof(int));
 		if (setsockopt(socketfd, SOL_SOCKET, SO_REUSEADDR, &enable_reuseaddr, sizeof(int)) != 0) {
@@ -48,45 +67,54 @@ int new_socket(int socktype, int protocol, char *service, bool broadcast) {
 			exit(-1); 
 		} 
 
-        if (broadcast == true) {
+        if (udp == true) { //setup SO_BROADCAST for UDP
         	int enable_broadcast = 1;
 			setsockopt(socketfd, SOL_SOCKET, SO_BROADCAST, &enable_broadcast, sizeof(int));
 			if (setsockopt(socketfd, SOL_SOCKET, SO_BROADCAST, &enable_broadcast, sizeof(int)) == -1) {
-						perror("setsockopt broadcast");
-						break; 
+				perror("setsockopt broadcast");
+				exit(-1);
 			}
 		}
+		else { //setup non_blocking and listening for TCP
+			int enable = 1; 
+			ioctl(socketfd, FIONBIO, (char*) &enable);
+
+			//listen(socketfd, 0);
+			if(listen(socketfd, 0) != 0){
+							perror("listen");
+							exit(-1);
+			}
+		}    
  
 		//bind function assigns address to unbound socket
         if (bind(socketfd, rp->ai_addr, rp->ai_addrlen) == 0) {
-            break;  // Success
+            break;
 		}
-		else {
-			perror("bind");
-		}
-    }
 
-    freeaddrinfo(result);  // No longer needed
+    	freeaddrinfo(result);  // No longer needed
 
-    if (rp == NULL) {  // No address succeeded
-        fprintf(stderr, "Could not bind\n");
-        exit(EXIT_FAILURE);
+    	if (rp == NULL) {  // No address succeeded
+        	fprintf(stderr, "Could not bind\n");
+        	exit(EXIT_FAILURE);
+    	}
     }	
 
     return socketfd;
 } 
 
-void send_message(int socket, int port, char* message) {
+void send_presence(int socket, int port, char *message) {
+	char *buf = message;
 	struct sockaddr_in addr;
     memset(&addr, 0, sizeof(struct sockaddr_in)); //fills block of memory of addr to 0
     addr.sin_family = PF_INET; //sets to IPv4
     addr.sin_port = htons (port); //htons = host to network short ,, switch host byte order (8221) to network byte order
     inet_pton(PF_INET, "10.10.13.255", &addr.sin_addr);	
 
-	int sent = sendto(socket, message, strlen(message), 0, (struct sockaddr*) &addr, sizeof(struct sockaddr_in));							
+	int sent = sendto(socket, buf, strlen(buf), 0, (struct sockaddr*) &addr, sizeof(struct sockaddr_in));
+	printf("%s\n", buf);
 }
 
-void receive_message(int socket) {
+struct user receive_presence(int socket) {
 
 	struct sockaddr_storage peer_addr; 
 	socklen_t peer_addr_len;
@@ -101,30 +129,107 @@ void receive_message(int socket) {
 	//given peer_addr, host will now hold the hostname of that address
 	char host[NI_MAXHOST], service[NI_MAXSERV];
 	int s = getnameinfo((struct sockaddr *) &peer_addr,
-    			peer_addr_len, host, NI_MAXHOST,
-            	service, NI_MAXSERV, NI_NUMERICSERV);
+    		peer_addr_len, host, NI_MAXHOST,
+     	      	service, NI_MAXSERV, NI_NUMERICSERV);
                 
     if (s == 0) {				
     	printf("%s %s\n", buf, host);
     }
-        				
-    else {
-    	fprintf(stderr, "getnameinfo: %s\n", gai_strerror(s)); 
-    }
+
+	char online[BUF_SIZE];
+    char user[BUF_SIZE];
+    char port[BUF_SIZE];
+
+    sscanf(buf, "%s %s %s", online, user, port);
+
+    struct user new_user = create_user(user, host, port); 
+
+    return new_user;
 
 	//sendto function sends message on socket
     if (sendto(socket, buf, nread, 0,(struct sockaddr *) &peer_addr, peer_addr_len) != nread) {
     	fprintf(stderr, "Error sending response\n");
     }
 
-    memset(buf, 0, BUF_SIZE);
+    //memset(buf, 0, BUF_SIZE);
+    memset(host, 0, BUF_SIZE);
+    memset(user, 0, BUF_SIZE);
+    memset(port, 0, BUF_SIZE);
 }
+
+int accept_connection(int socket) {
+	int new_socket = accept(socket, NULL, NULL);
+	if (new_socket != 0) {
+		perror("accept");
+	return new_socket;
+	}
+}
+
+void read_message(int socket, struct user *u) {
+	char buf[BUF_SIZE];
+	int rc = recv(socket, buf, BUF_SIZE, 0);
+	if (rc == -1)
+		perror("recv for chat");
+	else if (rc == 0)
+		printf("closed");
+	else {
+		struct sockaddr_in peer;
+		socklen_t peer_len = sizeof(peer);
+
+		if (getpeername(socket, (struct sockaddr*) &peer, &peer_len) != 0) {
+			perror("getpeername");
+		}
+
+		char host[NI_MAXHOST];
+		char service[NI_MAXSERV];
+
+		int rc = getnameinfo((struct sockaddr *) &peer, peer_len,
+			host, NI_MAXHOST, service, NI_MAXSERV, NI_NUMERICSERV);
+
+		if (rc == 0) {
+    		printf("%s %s\n", buf, host);
+    	}
+	}
+}
+
+void send_message(struct user *u, char *message) {
+	struct addrinfo hints;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = PF_INET;
+	hints.ai_socktype = SOCK_STREAM;
+
+	struct addrinfo *result;
+    int s = getaddrinfo(u->host, u->port, &hints, &result); //result now contains list of those structs
+    if (s != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
+        exit(EXIT_FAILURE);
+    }
+
+    int new_socket = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+
+    if (connect(new_socket, result->ai_addr, result->ai_addrlen) != 0) {
+    	printf("failed to connect to %s %s\n", u->host, u->port);
+    	perror("connect");
+    }
+
+    int len = strlen(message) + 1;
+
+	int sent = send(new_socket, message, len, 0);
+    
+    if (send(new_socket, message, len, 0) != 0)
+    	perror("send");
+    	
+}
+	
 
 int main(int argc, char *argv[])
 {
     char* class_port = "8221";
-    char* my_port = "8326"; //"8327"
+    char* my_port = "8326"; //second port: "8327"
+    
     int udp_socket = new_socket(SOCK_DGRAM, IPPROTO_UDP, class_port, true);
+    send_presence(udp_socket, 8221, "online crduque 8326");
+    
     int tcp_socket = new_socket(SOCK_STREAM, IPPROTO_TCP, my_port, false);
 
 	struct pollfd fds[64];
@@ -138,9 +243,19 @@ int main(int argc, char *argv[])
 	fds[1].events = POLLIN;
 	nfds++;
 
+	fds[2].fd = tcp_socket;
+	fds[2].events = POLLIN;
+	nfds++;
+
 	int timeout = 100;
 	int n = 0;
+
+	struct user user_data[61];
+	int user_socket[61];
+	int user_count = 0;
+
 	char buf[BUF_SIZE];
+	
 	while (1) {
 		int count = poll(fds, nfds, timeout);
 		//printf("count: %d\n", count);
@@ -148,40 +263,83 @@ int main(int argc, char *argv[])
 		if (count == 0) {
 		//printf("here");
 			if(n == 100) {
-				send_message(udp_socket, 8221, "online crduque 8326");
+				send_presence(udp_socket, 8221, "online crduque 8326");
 				n = 0;
 			}
 			n++;
 		}
 		else if (count > 0) {
-			for (int i = 0; i < count; i++) {
+			for (int i = 0; i < nfds; i++) {
 			
 				if (fds[i].revents & POLLIN) {
 				
-					if (fds[i].fd == STDIN_FILENO) {			
-						int count = 0;
+					if (fds[i].fd == STDIN_FILENO) {	
+						//printf("typing\n");		
+						int letter = 0;
 						int put;
 
 						while((put = getchar()) != EOF && put != '\n') {
-							buf[count] = put;
+							buf[letter] = put;
 							count++;
 						}
-						//printf("%s\n", buf);
-						send_message(udp_socket, 8221, buf);
+
+					
+						char user[BUF_SIZE];
+						sscanf(buf, "%s", user);
+
+					/*	for(int i = 0; i < user_count; i++) {
+							if(user == user_data[user_count].name) {
+								send_message(user_)
+							}
+						}*/
+						/*for(i = 0; i < user_count; i++) {
+							if()
+						}*/
+						//printf("typing\n");
+						//printf("%s", buf);
+						//send_message(tcp_socket, 8221, buf);
 						memset(buf, 0, BUF_SIZE);					
 						
 					}
+
+					//accumulates users when they go online
 					if (fds[i].fd == udp_socket) {
-						receive_message(udp_socket);	
-						n++;
-						//printf("%i", n);
+						//printf("udp\n");
+						
+						//create struct with user data
+						user_data[user_count] = receive_presence(udp_socket);
+						user_count++;
+						/*printf("%s\n %s\n %s\n ", user_data[user_count].name, 
+							user_data[user_count].port, user_data[user_count].host);
+						
+					/*	//create TCP socket for user 
+						user_socket[user_count] = new_socket(SOCK_STREAM, IPPROTO_TCP, user_data[user_count].port, false);
+
+						//create new file descriptor for POLL
+						fds[3 + user_count].fd = user_socket[user_count];
+						fds[3 + user_count].events = POLLIN;
+						user_count++;
+						nfds++;
+					*/
+											
 						//do UDP server stuff
 						//recvfrom(), getnameinfo()
 					}
-			//		if (fds[i].fd == tcp_socket) {
-					//do TCP server stuff
-					//accept() -> new socket fd
-			//		}
+					if (fds[i].fd == tcp_socket) {
+						//printf("tcp\n");
+						user_socket[user_count] = accept_connection(tcp_socket); 
+						fds[3 + user_count].fd = user_socket[user_count];
+						fds[3 + user_count].events = POLLIN;
+						user_count++;
+						nfds++;					
+
+						//accept() -> new socket fd
+					}
+					if(fds[i].fd == user_socket[i]) {
+						//printf("user\n");
+						//read_message(user_socket[i]);
+						
+					}
 				}
 			}
 		}
