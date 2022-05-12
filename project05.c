@@ -259,21 +259,19 @@ int main(int argc, char *argv[])
 	fds[2].events = POLLIN;
 	nfds++;
 
-
-	int n = 0;
-
 	struct user user_data[61]; //structs that will hold each user's info
 	int user_socket[61]; //sockets for all accumulated users
 	int user_count = 0; //count of all accumulated users 
+	
+	int n = 0; //used to periodically send broadcasts
 
-	char buf[BUF_SIZE];
+	char buf[BUF_SIZE]; //used to hold input 
 	
 	while (1) {
 		int count = poll(fds, nfds, timeout);
-		//printf("count: %d\n", count);
-		//printf("nfds: %d\n", nfds);
+
 		if (count == 0) {
-		//printf("here");
+
 			if(n == 100) {
 				send_presence(udp_socket, 8221, "online crduque 8326");
 				n = 0;
@@ -337,7 +335,7 @@ int main(int argc, char *argv[])
 					//create new socket to communicate with other users if they send message
 					//to our TCP listener
 					if (fds[i].fd == tcp_socket) {
-						printf("tcp\n");
+
 						user_socket[3 - nfds] = accept_connection(tcp_socket); 
 						fds[nfds].fd = user_socket[3 - nfds];
 						fds[nfds].events = POLLIN;
@@ -347,7 +345,7 @@ int main(int argc, char *argv[])
 
 					//read messages from existing sockets we've created from users
 					if(fds[i].fd == user_socket[i + 1 - nfds]) {
-						printf("user\n");
+
 						read_message(user_socket[i + 1 - nfds], &user_data[i + 1 - nfds]);
 						
 					}
